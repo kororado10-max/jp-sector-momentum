@@ -1,0 +1,65 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'bundle/chunk*.txt'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Extract application source
+        shell: bash
+        run: |
+          cat bundle/chunk*.txt > project.b64
+          base64 --decode project.b64 > project.tar.xz
+          echo '7d5e21007b963677b15fc401fda650a68ce7f86e00afcdf83cc86570a1fd901c  project.tar.xz' | sha256sum -c -
+          tar -xJf project.tar.xz
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2.23.0
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve Pages API URL
+        id: api
+        shell: bash
+        run: |
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          echo "url=https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Android scaffold and validate
+        working-directory: mobile
+        run: ./bootstrap_android.sh
+
+      - name: Build release APK
+        working-directory: mobile
+        env:
+          API_BASE_URL: ${{ steps.api.outputs.url }}
+        run: ./build_release_apk.sh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: jp-sector-momentum-apk
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
