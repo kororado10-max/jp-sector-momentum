@@ -13,21 +13,16 @@ on:
     - cron: '45 8 * * 1-5'
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: market-data
   cancel-in-progress: false
 
 jobs:
-  refresh-and-deploy:
+  refresh-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout
@@ -73,7 +68,6 @@ jobs:
           from datetime import date, timedelta
           from app.providers.stooq_provider import fetch_symbol, parse_stooq_csv
 
-          # Preserve the legacy parser contract used by regression tests.
           legacy = parse_stooq_csv(
               'Date,Open,High,Low,Close,Volume\n2026-08-07,100,105,99,104,123456\n',
               '7203',
@@ -113,14 +107,39 @@ jobs:
             backend/data/failed_symbols.txt
           key: market-data-${{ github.run_id }}
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v6
+      - name: Publish static API branch
+        shell: bash
+        run: |
+          rm -rf /tmp/jpsm-public
+          cp -a public /tmp/jpsm-public
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --orphan api-data
+          git rm -rf . || true
+          git clean -fdx
+          cp -a /tmp/jpsm-public/. .
+          touch .nojekyll
+          git add -A
+          git commit -m "Update market data ${GITHUB_RUN_ID}"
+          git push --force origin api-data
 
-      - name: Deploy Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Verify published endpoint
+        shell: bash
+        run: |
+          base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/api-data"
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error "${base}/metadata.json?run=${GITHUB_RUN_ID}" -o /tmp/metadata.json; then
+              python - <<'PY'
+          import json
+          data = json.load(open('/tmp/metadata.json', encoding='utf-8'))
+          print('published metadata:', data)
+          assert data.get('as_of')
+          assert data.get('sector_count') == 33
+          PY
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Published raw endpoint did not become available' >&2
+          exit 1
