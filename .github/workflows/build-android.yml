@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'bundle/stage5-*.b64'
+      - 'workflow/sector_stage5.dart'
       - '.github/workflows/build-android.yml'
 
 permissions:
@@ -27,6 +28,7 @@ jobs:
           base64 --decode project.b64 > project.tar.xz
           echo '4f6f775c652d18f13df7d8d8252086fe82675194bb500b90154088a22034bb39  project.tar.xz' | sha256sum -c -
           tar -xJf project.tar.xz
+          cp workflow/sector_stage5.dart mobile/lib/models/sector.dart
 
       - name: Set up Java
         uses: actions/setup-java@v5
