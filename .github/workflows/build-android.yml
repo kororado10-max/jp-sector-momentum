@@ -15,6 +15,7 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -39,12 +40,11 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Resolve Pages API URL
+      - name: Resolve static API URL
         id: api
         shell: bash
         run: |
-          repo_name="${GITHUB_REPOSITORY#*/}"
-          echo "url=https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}" >> "$GITHUB_OUTPUT"
+          echo "url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/api-data" >> "$GITHUB_OUTPUT"
 
       - name: Create Android scaffold
         working-directory: mobile
@@ -58,7 +58,10 @@ jobs:
           text = manifest.read_text()
           perm = '<uses-permission android:name="android.permission.INTERNET" />'
           if perm not in text:
-              text = text.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">', '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    ' + perm)
+              text = text.replace(
+                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
+                  '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    ' + perm,
+              )
           manifest.write_text(text)
           PY
           flutter pub get
