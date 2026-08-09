@@ -39,6 +39,122 @@ jobs:
           echo '7d5e21007b963677b15fc401fda650a68ce7f86e00afcdf83cc86570a1fd901c  project.tar.xz' | sha256sum -c -
           tar -xJf project.tar.xz
 
+      - name: Use Yahoo Finance EOD provider
+        shell: bash
+        run: |
+          cat > backend/app/providers/stooq_provider.py <<'PY'
+          """Best-effort free Yahoo Finance chart provider with the legacy Stooq interface."""
+          from __future__ import annotations
+          import asyncio
+          from datetime import datetime, timedelta, timezone
+          import pandas as pd
+          import httpx
+          from ..code_utils import canonical_code
+
+          BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
+
+          class StooqError(RuntimeError):
+              pass
+
+          def _epoch(day: str, plus_days: int = 0) -> int:
+              dt = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=plus_days)
+              return int(dt.timestamp())
+
+          def parse_yahoo_json(payload: dict, code: str) -> pd.DataFrame:
+              normalized = canonical_code(code)
+              chart = payload.get("chart") or {}
+              if chart.get("error"):
+                  raise StooqError(str(chart["error"]))
+              results = chart.get("result") or []
+              if not results:
+                  raise StooqError(f"No Yahoo chart result for {normalized}")
+              result = results[0]
+              timestamps = result.get("timestamp") or []
+              indicators = result.get("indicators") or {}
+              quotes = indicators.get("quote") or []
+              if not timestamps or not quotes:
+                  raise StooqError(f"No Yahoo OHLCV data for {normalized}")
+              q = quotes[0]
+              adj_blocks = indicators.get("adjclose") or []
+              adjusted = (adj_blocks[0].get("adjclose") if adj_blocks else None) or []
+              rows = []
+              for i, ts in enumerate(timestamps):
+                  vals = {k: (q.get(k) or [None] * len(timestamps))[i] for k in ["open", "high", "low", "close", "volume"]}
+                  if any(vals[k] is None for k in ["open", "high", "low", "close", "volume"]):
+                      continue
+                  raw_close = float(vals["close"])
+                  adj_close = adjusted[i] if i < len(adjusted) else None
+                  factor = (float(adj_close) / raw_close) if adj_close not in (None, 0) and raw_close else 1.0
+                  rows.append({
+                      "date": pd.to_datetime(int(ts), unit="s", utc=True).tz_convert("Asia/Tokyo").tz_localize(None).normalize(),
+                      "code": normalized,
+                      "open": float(vals["open"]) * factor,
+                      "high": float(vals["high"]) * factor,
+                      "low": float(vals["low"]) * factor,
+                      "close": raw_close * factor,
+                      "volume": float(vals["volume"]),
+                  })
+              if not rows:
+                  raise StooqError(f"No usable Yahoo rows for {normalized}")
+              return pd.DataFrame(rows)[["date", "code", "open", "high", "low", "close", "volume"]]
+
+          async def fetch_symbol(code: str, start: str, end: str, client: httpx.AsyncClient | None = None) -> pd.DataFrame:
+              normalized = canonical_code(code)
+              if not normalized:
+                  raise StooqError(f"Invalid TSE code: {code}")
+              symbol = f"{normalized}.T"
+              params = {
+                  "period1": _epoch(start),
+                  "period2": _epoch(end, 1),
+                  "interval": "1d",
+                  "events": "history",
+                  "includeAdjustedClose": "true",
+              }
+              owns_client = client is None
+              if client is None:
+                  client = httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent":"Mozilla/5.0 JP-Sector-Momentum/0.4"})
+              try:
+                  last_exc = None
+                  for attempt in range(4):
+                      try:
+                          r = await client.get(BASE_URL + symbol, params=params)
+                          if r.status_code == 429:
+                              raise StooqError("Yahoo rate limited request")
+                          r.raise_for_status()
+                          return parse_yahoo_json(r.json(), normalized)
+                      except Exception as exc:
+                          last_exc = exc
+                          if attempt < 3:
+                              await asyncio.sleep(1.2 * (attempt + 1))
+                  raise StooqError(f"Failed Yahoo fetch for {normalized}: {last_exc}")
+              finally:
+                  if owns_client:
+                      await client.aclose()
+
+          async def fetch_many(codes: list[str], start: str, end: str, concurrency: int = 6) -> tuple[pd.DataFrame, list[str]]:
+              sem = asyncio.Semaphore(max(1, concurrency))
+              failures: list[str] = []
+              frames: list[pd.DataFrame] = []
+              limits = httpx.Limits(max_connections=max(8, concurrency * 2), max_keepalive_connections=max(4, concurrency))
+              async with httpx.AsyncClient(timeout=20, follow_redirects=True, limits=limits, headers={"User-Agent":"Mozilla/5.0 JP-Sector-Momentum/0.4"}) as client:
+                  async def one(code: str):
+                      normalized = canonical_code(code)
+                      if not normalized:
+                          failures.append(str(code)); return
+                      async with sem:
+                          try:
+                              frame = await fetch_symbol(normalized, start, end, client)
+                              if frame.empty:
+                                  failures.append(normalized)
+                              else:
+                                  frames.append(frame)
+                          except Exception:
+                              failures.append(normalized)
+                  await asyncio.gather(*(one(c) for c in codes))
+              out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["date","code","open","high","low","close","volume"])
+              return out, sorted(set(failures))
+          PY
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -60,9 +176,20 @@ jobs:
       - name: Install backend
         run: pip install -r backend/requirements.txt
 
+      - name: Provider smoke test
+        working-directory: backend
+        run: |
+          PYTHONPATH=. python - <<'PY'
+          import asyncio
+          from app.providers.stooq_provider import fetch_symbol
+          df = asyncio.run(fetch_symbol('7203', '2026-07-01', '2026-08-09'))
+          print('Yahoo smoke rows=', len(df), 'latest=', df['date'].max())
+          assert len(df) >= 10
+          PY
+
       - name: Refresh EOD data
         working-directory: backend
-        run: PYTHONPATH=. python scripts/update_data.py --concurrency 8
+        run: PYTHONPATH=. python scripts/update_data.py --concurrency 6
 
       - name: Run backend tests
         working-directory: backend
