@@ -37,7 +37,9 @@ jobs:
           tar -xJf project.tar.xz
 
       - name: Install Yahoo Finance EOD provider
-        run: cp workflow/yahoo_provider.py backend/app/providers/stooq_provider.py
+        run: |
+          cp workflow/yahoo_provider.py backend/app/providers/stooq_provider.py
+          sed -i 's/JPX Prime master + Stooq EOD (best effort)/JPX Prime master + Yahoo Finance chart EOD (best effort)/' backend/scripts/export_static.py
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -136,6 +138,7 @@ jobs:
           print('published metadata:', data)
           assert data.get('as_of')
           assert data.get('sector_count') == 33
+          assert 'Yahoo Finance' in data.get('source', '')
           PY
               exit 0
             fi
