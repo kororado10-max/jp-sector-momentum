@@ -75,7 +75,10 @@ jobs:
         working-directory: mobile
         env:
           API_BASE_URL: ${{ steps.api.outputs.url }}
-        run: ./build_release_apk.sh
+        run: |
+          flutter build apk --release \
+            --dart-define=STATIC_API=true \
+            --dart-define=API_BASE_URL="$API_BASE_URL"
 
       - name: Upload APK
         uses: actions/upload-artifact@v5
