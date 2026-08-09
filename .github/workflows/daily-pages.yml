@@ -1,0 +1,99 @@
+name: Daily JP Sector Momentum
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'bundle/chunk*.txt'
+      - '.github/workflows/daily-pages.yml'
+  schedule:
+    # 17:45 JST on weekdays.
+    - cron: '45 8 * * 1-5'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Extract application source
+        shell: bash
+        run: |
+          cat bundle/chunk*.txt > project.b64
+          base64 --decode project.b64 > project.tar.xz
+          echo '7d5e21007b963677b15fc401fda650a68ce7f86e00afcdf83cc86570a1fd901c  project.tar.xz' | sha256sum -c -
+          tar -xJf project.tar.xz
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Restore price cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            backend/data/prices.csv
+            backend/data/update_status.json
+            backend/data/failed_symbols.txt
+          key: market-data-${{ github.run_id }}
+          restore-keys: |
+            market-data-
+
+      - name: Install backend
+        run: pip install -r backend/requirements.txt
+
+      - name: Refresh EOD data
+        working-directory: backend
+        run: PYTHONPATH=. python scripts/update_data.py --concurrency 8
+
+      - name: Run backend tests
+        working-directory: backend
+        run: PYTHONPATH=. pytest -q
+
+      - name: Export static API
+        working-directory: backend
+        run: PYTHONPATH=. python scripts/export_static.py --output ../public
+
+      - name: Verify static bundle
+        working-directory: backend
+        run: PYTHONPATH=. python scripts/verify_static.py --root ../public
+
+      - name: Save price cache
+        uses: actions/cache/save@v5
+        if: always()
+        with:
+          path: |
+            backend/data/prices.csv
+            backend/data/update_status.json
+            backend/data/failed_symbols.txt
+          key: market-data-${{ github.run_id }}
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
