@@ -7,6 +7,7 @@ on:
     paths:
       - 'bundle/stage5-*.b64'
       - 'workflow/sector_stage5.dart'
+      - 'workflow/stage6/**'
       - '.github/workflows/build-android.yml'
 
 permissions:
@@ -21,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Extract Stage 5 application source
+      - name: Extract Stage 5 base and apply Stage 6 UI
         shell: bash
         run: |
           cat bundle/stage5-*.b64 > project.b64
@@ -29,6 +30,15 @@ jobs:
           echo '4f6f775c652d18f13df7d8d8252086fe82675194bb500b90154088a22034bb39  project.tar.xz' | sha256sum -c -
           tar -xJf project.tar.xz
           cp workflow/sector_stage5.dart mobile/lib/models/sector.dart
+
+          mkdir -p mobile/lib/theme mobile/lib/widgets
+          cp workflow/stage6/app_theme.dart mobile/lib/theme/app_theme.dart
+          cp workflow/stage6/ui_kit.dart mobile/lib/widgets/ui_kit.dart
+          cp workflow/stage6/main.dart mobile/lib/main.dart
+
+          base64 --decode workflow/stage6/screens.tar.gz.b64 > /tmp/stage6-screens.tar.gz
+          echo '341ef2a03b1e7c5b8b2d61f0fd2b4a62f49b3b0bd6e0f034856bd45a3273455c  /tmp/stage6-screens.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/stage6-screens.tar.gz -C mobile/lib
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -88,7 +98,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v5
         with:
-          name: jp-sector-momentum-stage5-apk
+          name: jp-sector-momentum-stage6-premium-apk
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 30
